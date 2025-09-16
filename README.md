@@ -9,7 +9,7 @@ De dataset die we gebruiken is afkomstig van Spectral Industries en verkregen do
 
 Hieronder is een voorbeeld van een spectrum verkregen via een LIBS-meting. Dit is een metingen die gedaan is op een toermalijn (edelsteen). Op de grafiek zijn pieken te zien die overeenkomen met de aanwezigheid van verschillende elementen in het monster. Deze pieken worden gebruikt als kenmerken (features) voor het trainen van het model.
 
-![example_libs_spectrum.png](attachment:example_libs_spectrum.png)
+(/assets/images/example_libs_spectrum.png)
 
 Bron: `McMillan, N. (sd). LIBS spectrum of a tourmaline from Elba, Italy, with major peaks labeled. Laser-Induced Breakdown Spectroscopy. New Mexico State University.`
 
