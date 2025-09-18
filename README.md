@@ -12,8 +12,22 @@ KNN (K-Nearest Neighbors),
 Multi-layer Perceptron (MLP),
 Naive Bayes (NB).
 
-## Herkomst van dataset
+## De dataset
 De dataset die we gebruiken is afkomstig van Spectral Industries en verkregen door middel van LIBS (Laser-Induced Breakdown Spectroscopy) analyse. Deze dataset bevat metingen van verschillende chemische elementen in rubbermengsels, zoals koolstof, waterstof, zuurstof, zwavel, silicium, calcium, ijzer en aluminium. 
+
+
+De dataset is opgesplitst in drie categorieën op basis van het onderdeel van de autoband waar de meting vandaan komt:
+
+- Loopvlak (1)
+- Zijwand (5)
+- Binnenvoering (7)
+![De verschillende onderdelen van een autoband](/assets/images/onderdelen_van_autoband.png)
+
+Bron: `https://www.elburgbanden.nl/banden/technische-informatie-over-banden-en-wielen/`
+
+Elke categorie bevat meerdere metingen van verschillende monsters, wat zorgt voor een diverse dataset die geschikt is voor het trainen van machine learning modellen.
+
+
 
 Hieronder is een voorbeeld van een spectrum verkregen via een LIBS-meting (niet afkomstig van Spectral Industries). Dit is een meting die gedaan is op een toermalijn (edelsteen). Op de grafiek zijn pieken te zien die overeenkomen met de aanwezigheid van verschillende elementen in het monster. Deze pieken worden gebruikt als kenmerken (features) voor het trainen van het model.
 
