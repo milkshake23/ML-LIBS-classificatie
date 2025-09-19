@@ -36,12 +36,12 @@ Hieronder is een voorbeeld van een spectrum verkregen via een LIBS-meting (niet 
 Bron: `McMillan, N. (sd). LIBS spectrum of a tourmaline from Elba, Italy, with major peaks labeled. Laser-Induced Breakdown Spectroscopy. New Mexico State University.`
 
 ## KPI's
-De belangrijkste prestatie-indicatoren (KPI's) voor het evalueren van de modellen zijn:
+De belangrijkste kritieke prestatie indicatoren (KPI's) voor het evalueren van de modellen zijn:
 - **Nauwkeurigheid (Accuracy)**: Het percentage correct geclassificeerde voorbeelden.
 - **Snelheid (Inference Time)**: De tijd die het model nodig heeft om een voorspelling te doen.
 - **Snelheid van training (Training Time)**: De tijd die het model nodig heeft om te trainen op de dataset.
 - **Modelgrootte (Model Size)**: De hoeveelheid geheugen die het model in beslag neemt.
 
 Naast deze KPI's zullen we ook de volgende evaluatiemethoden gebruiken:
-- **Confusiematrix**: Om de prestaties van het model per klasse te visualiseren.
+- **Confusionmatrix**: Om de prestaties van het model per klasse te visualiseren.
 
