@@ -1,13 +1,42 @@
-import tensorflow as tf
-import numpy as np
-import h5py
-import os
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
+import tensorflow as tf # type: ignore
+import numpy as np # type: ignore
+import h5py # type: ignore
+import os # type: ignore
+from sklearn.preprocessing import LabelEncoder # type: ignore
+from sklearn.model_selection import train_test_split # type: ignore
 import gc  # Garbage collection for memory management
 
+# Import the baseline correction functions
+import sys
+sys.path.append('..')  # Add parent directory to path
+try:
+    from baseline_correction_functions import BaselineCorrector
+    BASELINE_CORRECTION_AVAILABLE = True
+except ImportError:
+    print("Warning: baseline_correction_functions not found. Falling back to basic AsLS.")
+    BASELINE_CORRECTION_AVAILABLE = False
+    
+    # Fallback basic AsLS implementation
+    from scipy import sparse # type: ignore
+    from scipy.sparse.linalg import spsolve # type: ignore
+    
+    def baseline_als_basic(y, lam=1e5, p=0.001, niter=10):
+        """Basic AsLS baseline correction fallback"""
+        L = len(y)
+        D = sparse.diags([1, -2, 1], [0, -1, -2], shape=(L, L-2))
+        w = np.ones(L)
+        
+        for i in range(niter):
+            W = sparse.spdiags(w, 0, L, L)
+            Z = W + lam * D.dot(D.transpose())
+            z = spsolve(Z, w * y)
+            w = p * (y > z) + (1 - p) * (y < z)
+        
+        return z
+
 def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, prefetch_buffer=tf.data.AUTOTUNE, 
-                                   cache_dataset=True, apply_baseline_correction=False, max_files=None):
+                                   cache_dataset=True, apply_baseline_correction=False, max_files=None,
+                                   baseline_method='hybrid', baseline_params=None):
     """
     Create a TensorFlow Dataset from LIBS HDF5 files for efficient processing of large datasets.
     
@@ -16,8 +45,10 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
     - batch_size: Batch size for training
     - prefetch_buffer: Prefetch buffer size (use tf.data.AUTOTUNE for automatic)
     - cache_dataset: Whether to cache the dataset in memory
-    - apply_baseline_correction: Whether to apply AsLS baseline correction
+    - apply_baseline_correction: Whether to apply baseline correction
     - max_files: Maximum number of files to process (None for all files)
+    - baseline_method: Baseline correction method ('als', '4s', 'hybrid')
+    - baseline_params: Dictionary of parameters for baseline correction
     
     Returns:
     - train_dataset: TensorFlow Dataset for training
@@ -27,12 +58,48 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
     - dataset_info: Dictionary with dataset information
     """
     
+    # Set default baseline correction parameters
+    if baseline_params is None:
+        if baseline_method == 'hybrid':
+            baseline_params = {
+                'window_length': 51,
+                'polyorder': 3,
+                'als_lam': 1e4,
+                'als_p': 0.01
+            }
+        elif baseline_method == 'als':
+            baseline_params = {
+                'lam': 1e4,
+                'p': 0.01,
+                'niter': 10
+            }
+        elif baseline_method == '4s':
+            baseline_params = {
+                'window_length': 51,
+                'polyorder': 3,
+                'iterations': 4,
+                'threshold_factor': 0.1,
+                'fill_factor': 0.8
+            }
+        else:
+            baseline_params = {}
+    
     print("📂 Scanning HDF5 files...")
     all_files = [f for f in os.listdir(data_directory) if f.endswith('.h5')]
     if max_files:
         all_files = all_files[:max_files]
     
     print(f"Found {len(all_files)} HDF5 files to process")
+    
+    if apply_baseline_correction:
+        if BASELINE_CORRECTION_AVAILABLE:
+            print(f"🔧 Baseline correction enabled: {baseline_method.upper()} method")
+            print(f"   Parameters: {baseline_params}")
+            # Initialize baseline corrector
+            corrector = BaselineCorrector()
+        else:
+            print("🔧 Baseline correction enabled: Basic AsLS method (fallback)")
+            print(f"   Parameters: {baseline_params}")
     
     # Initialize data containers
     all_spectra = []
@@ -51,22 +118,51 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
                 return int(match.group(1))
         return None
     
-    def baseline_als_tf(y, lam=1e5, p=0.001, niter=10):
-        """TensorFlow-compatible AsLS baseline correction"""
-        from scipy import sparse
-        from scipy.sparse.linalg import spsolve
-        
-        L = len(y)
-        D = sparse.diags([1, -2, 1], [0, -1, -2], shape=(L, L-2))
-        w = np.ones(L)
-        
-        for i in range(niter):
-            W = sparse.spdiags(w, 0, L, L)
-            Z = W + lam * D.dot(D.transpose())
-            z = spsolve(Z, w * y)
-            w = p * (y > z) + (1 - p) * (y < z)
-        
-        return z
+    def apply_baseline_correction_to_spectrum(spectrum, method, params, corrector_instance=None):
+        """Apply baseline correction to a single spectrum"""
+        try:
+            if BASELINE_CORRECTION_AVAILABLE and corrector_instance is not None:
+                # Use the advanced baseline correction methods
+                if method == 'hybrid':
+                    baseline = corrector_instance.baseline_hybrid_4s_als(
+                        spectrum, 
+                        window_length=params.get('window_length', 51),
+                        polyorder=params.get('polyorder', 3),
+                        als_lam=params.get('als_lam', 1e4),
+                        als_p=params.get('als_p', 0.01)
+                    )
+                elif method == 'als':
+                    baseline = corrector_instance.baseline_als(
+                        spectrum,
+                        lam=params.get('lam', 1e4),
+                        p=params.get('p', 0.01),
+                        niter=params.get('niter', 10)
+                    )
+                elif method == '4s':
+                    baseline = corrector_instance.baseline_4s_peak_filling(
+                        spectrum,
+                        window_length=params.get('window_length', 51),
+                        polyorder=params.get('polyorder', 3),
+                        iterations=params.get('iterations', 4),
+                        threshold_factor=params.get('threshold_factor', 0.1),
+                        fill_factor=params.get('fill_factor', 0.8)
+                    )
+                else:
+                    raise ValueError(f"Unknown baseline method: {method}")
+            else:
+                # Fallback to basic AsLS
+                baseline = baseline_als_basic(
+                    spectrum,
+                    lam=params.get('lam', 1e4),
+                    p=params.get('p', 0.01),
+                    niter=params.get('niter', 10)
+                )
+            
+            return spectrum - baseline
+            
+        except Exception as e:
+            print(f"    Warning: Baseline correction failed: {e}")
+            return spectrum  # Return original spectrum on failure
     
     print("🔄 Processing HDF5 files...")
     
@@ -106,11 +202,10 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
                         
                         # Apply baseline correction if requested
                         if apply_baseline_correction:
-                            try:
-                                baseline = baseline_als_tf(spectrum)
-                                spectrum = spectrum - baseline
-                            except Exception as e:
-                                print(f"    Warning: Baseline correction failed for {filename}[{measurement_idx}]: {e}")
+                            corrector_to_use = corrector if BASELINE_CORRECTION_AVAILABLE else None
+                            spectrum = apply_baseline_correction_to_spectrum(
+                                spectrum, baseline_method, baseline_params, corrector_to_use
+                            )
                         
                         all_spectra.append(spectrum)
                         all_labels.append(origin)
@@ -124,11 +219,10 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
                     spectrum = intensity.astype(np.float32)
                     
                     if apply_baseline_correction:
-                        try:
-                            baseline = baseline_als_tf(spectrum)
-                            spectrum = spectrum - baseline
-                        except Exception as e:
-                            print(f"    Warning: Baseline correction failed for {filename}: {e}")
+                        corrector_to_use = corrector if BASELINE_CORRECTION_AVAILABLE else None
+                        spectrum = apply_baseline_correction_to_spectrum(
+                            spectrum, baseline_method, baseline_params, corrector_to_use
+                        )
                     
                     all_spectra.append(spectrum)
                     all_labels.append(origin)
@@ -213,7 +307,9 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
         'feature_shape': X.shape[1:],
         'steps_per_epoch': len(X_train) // batch_size,
         'validation_steps': len(X_val) // batch_size,
-        'baseline_corrected': apply_baseline_correction
+        'baseline_corrected': apply_baseline_correction,
+        'baseline_method': baseline_method if apply_baseline_correction else None,
+        'baseline_params': baseline_params if apply_baseline_correction else None
     }
     
     print(f"\n🎯 TensorFlow Dataset created successfully!")
@@ -221,17 +317,27 @@ def create_libs_tensorflow_dataset(data_directory='../data', batch_size=32, pref
     print(f"   • Features per sample: {dataset_info['n_features']:,}")
     print(f"   • Classes: {dataset_info['n_classes']} ({', '.join(dataset_info['class_names'])})")
     print(f"   • Baseline corrected: {dataset_info['baseline_corrected']}")
+    if apply_baseline_correction:
+        print(f"   • Baseline method: {dataset_info['baseline_method']}")
+        print(f"   • Method parameters: {dataset_info['baseline_params']}")
     print(f"   • Steps per epoch: {dataset_info['steps_per_epoch']}")
     
     return train_dataset, val_dataset, test_dataset, label_encoder, dataset_info
 
 try:
-    # Create TensorFlow datasets
+    # Create TensorFlow datasets with Hybrid 4S+AsLS baseline correction
     train_ds, val_ds, test_ds, label_enc, info = create_libs_tensorflow_dataset(
         data_directory='data',
         batch_size=32,
-        max_files=None,  # Limit for demonstration
-        apply_baseline_correction=False,  # Set to True to apply baseline correction
+        max_files=None,  # Process all files
+        apply_baseline_correction=True,  # Enable baseline correction
+        baseline_method='hybrid',  # Use Hybrid 4S+AsLS method
+        baseline_params={  # Custom parameters for hybrid method
+            'window_length': 51,
+            'polyorder': 3,
+            'als_lam': 1e4,
+            'als_p': 0.01
+        },
         cache_dataset=True
     )
     
@@ -246,10 +352,14 @@ try:
         print(f"   Label shape: {batch_y.shape}")
         print(f"   Data type: {batch_x.dtype}")
         print(f"   Label range: {tf.reduce_min(batch_y)} to {tf.reduce_max(batch_y)}")
+        print(f"   Intensity range: {tf.reduce_min(batch_x):.3f} to {tf.reduce_max(batch_x):.3f}")
         break
     
-    print(f"\n✅ TensorFlow Dataset ready for training!")
+    print(f"\n✅ TensorFlow Dataset ready for training with Hybrid 4S+AsLS baseline correction!")
     
 except Exception as e:
     print(f"❌ Error creating TensorFlow dataset: {e}")
-    print("Make sure TensorFlow is installed: pip install tensorflow")
+    print("Make sure TensorFlow and scipy are installed:")
+    print("  pip install tensorflow scipy scikit-learn")
+    import traceback
+    traceback.print_exc()
