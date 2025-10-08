@@ -212,63 +212,131 @@ class BaselineCorrector:
         return baseline_final
     
     def apply_correction_batch(self, 
-                              spectra_matrix: Union[np.ndarray, pd.DataFrame], 
-                              method: str = 'hybrid',
-                              batch_size: int = 100,
-                              **kwargs) -> np.ndarray:
+                          spectra_df: Union[np.ndarray, pd.DataFrame], 
+                          method: str = 'hybrid',
+                          batch_size: int = 100,
+                          spectral_columns: Optional[list] = None,
+                          **kwargs) -> Union[np.ndarray, pd.DataFrame]:
         """
         Apply baseline correction to multiple spectra efficiently in batches.
-        
+
         Parameters:
         -----------
-        spectra_matrix : np.ndarray or pd.DataFrame
-            Matrix of spectra (n_spectra x n_wavelengths)
+        spectra_df : np.ndarray or pd.DataFrame
+            DataFrame with spectral data or matrix of spectra (n_spectra x n_wavelengths)
+            If DataFrame, spectral data should be in columns (wavelengths as column names)
         method : str, default='hybrid'
             Correction method ('als', '4s', or 'hybrid')
         batch_size : int, default=100
             Number of spectra to process in each batch
+        spectral_columns : list, optional
+            List of column names containing spectral data. If None, will auto-detect
+            by excluding common metadata columns like 'tire_number', 'origin', 'measurement_id'
         **kwargs
             Additional parameters for the correction method
             
         Returns:
         --------
-        np.ndarray
-            Matrix of corrected spectra
+        Union[np.ndarray, pd.DataFrame]
+            If input is DataFrame: DataFrame with corrected spectral data
+            If input is numpy array: Matrix of corrected spectra
         """
-        # Convert to numpy array if DataFrame
-        if isinstance(spectra_matrix, pd.DataFrame):
-            spectra_array = spectra_matrix.values
+        # Handle numpy array input (existing functionality)
+        if isinstance(spectra_df, np.ndarray):
+            spectra_array = spectra_df
+            n_spectra, n_wavelengths = spectra_array.shape
+            corrected_spectra = np.zeros_like(spectra_array, dtype=np.float32)
+            
+            # Get the correction method
+            if method not in self.correction_methods:
+                raise ValueError(f"Unknown method '{method}'. Available methods: {list(self.correction_methods.keys())}")
+            
+            method_func = self.correction_methods[method]
+            
+            print(f"Applying {method.upper()} baseline correction to {n_spectra} spectra in batches of {batch_size}...")
+            
+            for start_idx in range(0, n_spectra, batch_size):
+                end_idx = min(start_idx + batch_size, n_spectra)
+                
+                print(f"  Processing batch {start_idx//batch_size + 1}/{(n_spectra-1)//batch_size + 1} "
+                      f"(spectra {start_idx+1}-{end_idx})")
+                
+                for i in range(start_idx, end_idx):
+                    try:
+                        spectrum = spectra_array[i].astype(float)
+                        baseline = method_func(spectrum, **kwargs)
+                        corrected_spectra[i] = spectrum - baseline
+                        
+                    except Exception as e:
+                        print(f"    Warning: Failed to correct spectrum {i+1}: {e}")
+                        corrected_spectra[i] = spectra_array[i]  # Keep original on failure
+            
+            return corrected_spectra
+        
+        # Handle DataFrame input (new functionality)
+        elif isinstance(spectra_df, pd.DataFrame):
+            print(f"Processing DataFrame with {len(spectra_df)} rows and {len(spectra_df.columns)} columns")
+            
+            # Auto-detect spectral columns if not provided
+            if spectral_columns is None:
+                # Common metadata columns to exclude
+                metadata_columns = ['tire_number', 'origin', 'measurement_id', 'sample_id', 'class', 'label']
+                spectral_columns = [col for col in spectra_df.columns 
+                                  if col not in metadata_columns and 
+                                  (isinstance(col, (int, float)) or 
+                                   (isinstance(col, str) and col.replace('.', '').replace('-', '').isdigit()))]
+                
+                print(f"Auto-detected {len(spectral_columns)} spectral columns")
+                if len(spectral_columns) == 0:
+                    raise ValueError("No spectral columns detected. Please specify spectral_columns parameter.")
+            
+            # Extract spectral data
+            spectral_data = spectra_df[spectral_columns].values.astype(float)
+            n_spectra, n_wavelengths = spectral_data.shape
+            
+            print(f"Extracted spectral matrix: {n_spectra} spectra x {n_wavelengths} wavelengths")
+            
+            # Get the correction method
+            if method not in self.correction_methods:
+                raise ValueError(f"Unknown method '{method}'. Available methods: {list(self.correction_methods.keys())}")
+            
+            method_func = self.correction_methods[method]
+            
+            # Initialize corrected data array
+            corrected_spectral_data = np.zeros_like(spectral_data, dtype=np.float32)
+            
+            print(f"Applying {method.upper()} baseline correction to {n_spectra} spectra in batches of {batch_size}...")
+            
+            # Process in batches
+            for start_idx in range(0, n_spectra, batch_size):
+                end_idx = min(start_idx + batch_size, n_spectra)
+                
+                print(f"  Processing batch {start_idx//batch_size + 1}/{(n_spectra-1)//batch_size + 1} "
+                      f"(rows {start_idx+1}-{end_idx})")
+                
+                for i in range(start_idx, end_idx):
+                    try:
+                        spectrum = spectral_data[i]
+                        baseline = method_func(spectrum, **kwargs)
+                        corrected_spectral_data[i] = spectrum - baseline
+                        
+                    except Exception as e:
+                        print(f"    Warning: Failed to correct spectrum {i+1}: {e}")
+                        corrected_spectral_data[i] = spectral_data[i]  # Keep original on failure
+            
+            # Create corrected DataFrame
+            corrected_df = spectra_df.copy()
+            
+            # Replace spectral columns with corrected data
+            for j, col in enumerate(spectral_columns):
+                corrected_df[col] = corrected_spectral_data[:, j]
+            
+            print(f"Baseline correction completed! Returning corrected DataFrame.")
+            
+            return corrected_df
+        
         else:
-            spectra_array = spectra_matrix
-        
-        n_spectra, n_wavelengths = spectra_array.shape
-        corrected_spectra = np.zeros_like(spectra_array, dtype=np.float32)
-        
-        # Get the correction method
-        if method not in self.correction_methods:
-            raise ValueError(f"Unknown method '{method}'. Available methods: {list(self.correction_methods.keys())}")
-        
-        method_func = self.correction_methods[method]
-        
-        print(f"Applying {method.upper()} baseline correction to {n_spectra} spectra in batches of {batch_size}...")
-        
-        for start_idx in range(0, n_spectra, batch_size):
-            end_idx = min(start_idx + batch_size, n_spectra)
-            
-            print(f"  Processing batch {start_idx//batch_size + 1}/{(n_spectra-1)//batch_size + 1} "
-                  f"(spectra {start_idx+1}-{end_idx})")
-            
-            for i in range(start_idx, end_idx):
-                try:
-                    spectrum = spectra_array[i].astype(float)
-                    baseline = method_func(spectrum, **kwargs)
-                    corrected_spectra[i] = spectrum - baseline
-                    
-                except Exception as e:
-                    print(f"    Warning: Failed to correct spectrum {i+1}: {e}")
-                    corrected_spectra[i] = spectra_array[i]  # Keep original on failure
-        
-        return corrected_spectra
+            raise ValueError("Input must be either numpy array or pandas DataFrame")
     
     def correct_single_spectrum(self, 
                                spectrum: np.ndarray, 
@@ -566,3 +634,49 @@ def apply_baseline_correction_batch(spectra_matrix: Union[np.ndarray, pd.DataFra
         method_name = '4s'
     
     return corrector.apply_correction_batch(spectra_matrix, method_name, batch_size, **kwargs)
+
+def apply_baseline_correction_to_dataframe(df: pd.DataFrame, 
+                                        method: str = 'hybrid',
+                                        batch_size: int = 100,
+                                        spectral_columns: Optional[list] = None,
+                                        **kwargs) -> pd.DataFrame:
+    """
+    Convenience function to apply baseline correction to a pandas DataFrame.
+
+    Parameters:
+    -----------
+    df : pd.DataFrame
+        DataFrame containing spectral data
+    method : str, default='hybrid'
+        Correction method ('als', '4s', or 'hybrid')
+    batch_size : int, default=100
+        Number of spectra to process in each batch
+    spectral_columns : list, optional
+        List of column names containing spectral data. If None, will auto-detect
+    **kwargs
+        Additional parameters for the correction method
+        
+    Returns:
+    --------
+    pd.DataFrame
+        DataFrame with baseline-corrected spectral data
+
+    Example:
+    --------
+    >>> corrector = BaselineCorrector()
+    >>> corrected_df = apply_baseline_correction_to_dataframe(
+    ...     df=my_spectral_df,
+    ...     method='hybrid',
+    ...     batch_size=50,
+    ...     lam=1e5,
+    ...     p=0.001
+    ... )
+    """
+    corrector = BaselineCorrector()
+    return corrector.apply_correction_batch(
+        spectra_df=df, 
+        method=method, 
+        batch_size=batch_size,
+        spectral_columns=spectral_columns,
+        **kwargs
+    )
