@@ -130,12 +130,47 @@ class LibsDataLoader:
             if wavelength_info is None:
                 n_wavelengths = len(measurement['intensities'])
                 wavelength_info = n_wavelengths
+                # Get actual wavelengths from the reference if available
+                if self.wavelength_reference is not None:
+                    actual_wavelengths = self.wavelength_reference.copy()
             
             if measurement_count % 10000 == 0:
                 print(f"  Counted {measurement_count:,} measurements...")
         
         print(f"Total measurements found: {measurement_count:,}")
         print(f"Wavelengths per spectrum: {wavelength_info}")
+        
+         # Process wavelengths: round to 1 decimal and remove duplicates
+        if actual_wavelengths is not None:
+            # Round wavelengths to 1 decimal place
+            rounded_wavelengths = np.round(actual_wavelengths, 1)
+
+            # Find unique wavelengths and their indices
+            unique_wavelengths, unique_indices = np.unique(rounded_wavelengths, return_index=True)
+
+            # Sort by original order to maintain wavelength sequence
+            sorted_indices = np.sort(unique_indices)
+            final_wavelengths = rounded_wavelengths[sorted_indices]
+        
+            # Sort by original order to maintain wavelength sequence
+            sorted_indices = np.sort(unique_indices)
+            final_wavelengths = rounded_wavelengths[sorted_indices]
+            
+            print(f"Original wavelengths: {len(actual_wavelengths)}")
+            print(f"After rounding and deduplication: {len(final_wavelengths)}")
+            print(f"Wavelength range: {final_wavelengths.min():.1f} - {final_wavelengths.max():.1f} nm")
+            
+            if len(final_wavelengths) != len(actual_wavelengths):
+                print(f"Removed {len(actual_wavelengths) - len(final_wavelengths)} duplicate wavelengths")
+        else:
+            print("No duplicate wavelengths found.")
+
+        # Fallback: create synthetic wavelength range
+        print("No wavelength reference found, creating synthetic range...")
+        final_wavelengths = np.round(np.linspace(200, 1000, wavelength_info), 1)
+        unique_wavelengths, unique_indices = np.unique(final_wavelengths, return_index=True)
+        sorted_indices = np.sort(unique_indices)
+        final_wavelengths = final_wavelengths[sorted_indices]
         
         # Pre-allocate numpy arrays for maximum memory efficiency
         print("Pre-allocating memory-efficient arrays...")
