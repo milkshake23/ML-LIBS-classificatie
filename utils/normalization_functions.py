@@ -9,7 +9,7 @@ class Normalizer:
     """
     def __init__(self):
         pass
-    
+
     @staticmethod
     def apply_standard_normal_variate_on_multiple_spectra(spectra_matrix):
         """
@@ -59,8 +59,8 @@ class Normalizer:
             df_normalized[col] = (df[col] - col_mean) / col_std
         
         return df_normalized.astype(np.float32)
-    
 
+    @staticmethod
     def apply_standard_normal_variate_on_dataset(X_train):
         """
         Apply Standard Normal Variate (SNV) normalization to baseline-corrected spectral dataset.
@@ -74,8 +74,6 @@ class Normalizer:
             Training dataset containing baseline-corrected spectral data
             - If DataFrame: columns should be wavelength values (as strings or numbers)
             - If numpy array: each row is a spectrum, each column is a wavelength
-        wavelength_range : tuple, optional (default=(200, 900))
-            Range of wavelengths to consider for normalization (min_wl, max_wl)
         
         Returns:
         --------
@@ -95,7 +93,7 @@ class Normalizer:
             return Normalizer._normalize_array_dataset(X_train)
         else:
             raise TypeError("X_train must be either pandas DataFrame or numpy ndarray")
-    
+
     @staticmethod
     def _normalize_dataframe_dataset(X_train):
         """Handle DataFrame input for SNV normalization"""
@@ -120,7 +118,9 @@ class Normalizer:
         normalized_spectral_data = (spectral_data - means) / stds
         
         # Replace wavelength columns with normalized values
-        X_normalized = normalized_spectral_data.astype(np.float32)
+        X_normalized = pd.DataFrame(normalized_spectral_data.astype(np.float32), 
+                                   columns=X_train.columns, 
+                                   index=X_train.index)
         
         # Verify normalization
         sample_spectrum = normalized_spectral_data[0, :]
@@ -128,7 +128,7 @@ class Normalizer:
         print(f"  - SNV normalization completed successfully!")
         
         return X_normalized
-    
+
     @staticmethod
     def _normalize_array_dataset(X_train):
         """Handle numpy array input for SNV normalization"""

@@ -18,6 +18,7 @@ from sklearn.metrics import classification_report, confusion_matrix, accuracy_sc
 from sklearn.ensemble import RandomForestClassifier # type: ignore[import]
 from sklearn.linear_model import LogisticRegression # type: ignore[import]
 import matplotlib.pyplot as plt # type: ignore[import]
+from sklearn.preprocessing import LabelEncoder # type: ignore[import]
 import seaborn as sns # type: ignore[import]
 
 
@@ -140,38 +141,6 @@ class LibsDataLoader:
         print(f"Total measurements found: {measurement_count:,}")
         print(f"Wavelengths per spectrum: {wavelength_info}")
         
-         # Process wavelengths: round to 1 decimal and remove duplicates
-        if actual_wavelengths is not None:
-            # Round wavelengths to 1 decimal place
-            rounded_wavelengths = np.round(actual_wavelengths, 1)
-
-            # Find unique wavelengths and their indices
-            unique_wavelengths, unique_indices = np.unique(rounded_wavelengths, return_index=True)
-
-            # Sort by original order to maintain wavelength sequence
-            sorted_indices = np.sort(unique_indices)
-            final_wavelengths = rounded_wavelengths[sorted_indices]
-        
-            # Sort by original order to maintain wavelength sequence
-            sorted_indices = np.sort(unique_indices)
-            final_wavelengths = rounded_wavelengths[sorted_indices]
-            
-            print(f"Original wavelengths: {len(actual_wavelengths)}")
-            print(f"After rounding and deduplication: {len(final_wavelengths)}")
-            print(f"Wavelength range: {final_wavelengths.min():.1f} - {final_wavelengths.max():.1f} nm")
-            
-            if len(final_wavelengths) != len(actual_wavelengths):
-                print(f"Removed {len(actual_wavelengths) - len(final_wavelengths)} duplicate wavelengths")
-        else:
-            print("No duplicate wavelengths found.")
-
-        # Fallback: create synthetic wavelength range
-        print("No wavelength reference found, creating synthetic range...")
-        final_wavelengths = np.round(np.linspace(200, 1000, wavelength_info), 1)
-        unique_wavelengths, unique_indices = np.unique(final_wavelengths, return_index=True)
-        sorted_indices = np.sort(unique_indices)
-        final_wavelengths = final_wavelengths[sorted_indices]
-        
         # Pre-allocate numpy arrays for maximum memory efficiency
         print("Pre-allocating memory-efficient arrays...")
         X_data = np.empty((measurement_count, wavelength_info), dtype=np.float32)
@@ -195,7 +164,7 @@ class LibsDataLoader:
         
         # Create DataFrame efficiently
         print("Creating final DataFrame...")
-        wavelength_columns = [f'{wl:.3f}' for wl in np.linspace(200, 1000, wavelength_info)]
+        wavelength_columns = [f'{wl:.1f}' for wl in actual_wavelengths]
         
         df_individual = pd.DataFrame(X_data, columns=wavelength_columns, dtype=np.float32)
         df_individual['origin'] = y_data
@@ -205,35 +174,140 @@ class LibsDataLoader:
         # Clean up intermediate arrays
         del X_data, y_data, metadata
         gc.collect()
+
+        non_feature_cols = ['tire_number', 'origin', 'measurement_id']
+        original_wavelength_cols = [col for col in df_individual.columns if col not in non_feature_cols]
+    
+        print(f"Original wavelength columns: {len(original_wavelength_cols)}")
+    
+        # Convert column names to floats, round, and find unique values
+        original_wavelengths = [float(col) for col in original_wavelength_cols]
+        rounded_wavelengths = np.round(original_wavelengths, 1)
+        
+        # Create mapping from original to rounded wavelengths
+        wavelength_mapping = {}
+        for orig_col, rounded_wl in zip(original_wavelength_cols, rounded_wavelengths):
+            rounded_col_name = f'{rounded_wl:.1f}'
+            if rounded_col_name not in wavelength_mapping:
+                wavelength_mapping[rounded_col_name] = []
+            wavelength_mapping[rounded_col_name].append(orig_col)
+        
+        print(f"After rounding: {len(wavelength_mapping)} unique wavelengths")
+        
+        # Create new DataFrame with rounded and deduplicated wavelength columns
+        print("Creating DataFrame with deduplicated wavelength columns...")
+        
+        # Start with metadata columns
+        new_df_data = {}
+        for col in non_feature_cols:
+            new_df_data[col] = df_individual[col].values
+        
+        # Process wavelength columns - combine duplicates by averaging
+        for rounded_wl, orig_cols in wavelength_mapping.items():
+            if len(orig_cols) == 1:
+                # No duplicates, just rename
+                new_df_data[rounded_wl] = df_individual[orig_cols[0]].values
+            else:
+                # Multiple columns map to same rounded wavelength - average them
+                combined_values = df_individual[orig_cols].mean(axis=1).values
+                new_df_data[rounded_wl] = combined_values
+                print(f"  Averaged {len(orig_cols)} columns into {rounded_wl} nm")
+        
+        # Create final DataFrame
+        df_final = pd.DataFrame(new_df_data)
+        
+        # Reorder columns: metadata first, then wavelengths in sorted order
+        wavelength_cols_final = sorted([col for col in df_final.columns if col not in non_feature_cols], 
+                                    key=lambda x: float(x))
+        column_order = non_feature_cols + wavelength_cols_final
+        df_final = df_final[column_order]
+        
+        # Final verification - check for any remaining duplicate columns
+        duplicate_cols = df_final.columns[df_final.columns.duplicated()]
+        if len(duplicate_cols) > 0:
+            print(f"Warning: Found {len(duplicate_cols)} duplicate columns in final DataFrame!")
+            print(f"Duplicate columns: {duplicate_cols.tolist()}")
+            # Remove duplicates by keeping the first occurrence
+            df_final = df_final.loc[:, ~df_final.columns.duplicated()]
+            print(f"Removed duplicates, final shape: {df_final.shape}")
         
         print(f"\n" + "="*70)
         print("MEMORY-EFFICIENT DATASET CREATED")
         print("="*70)
-        print(f"Total measurements: {len(df_individual):,}")
-        print(f"Dataset shape: {df_individual.shape}")
-        print(f"Memory usage: {df_individual.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
+        print(f"Total measurements: {len(df_final):,}")
+        print(f"Dataset shape: {df_final.shape}")
+        print(f"Unique wavelength columns: {df_final.shape[1] - 3}")  # Subtract metadata columns
+        print(f"Memory usage: {df_final.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
         
-        return df_individual
+        # Get wavelength range from final columns
+        final_wavelength_values = [float(col) for col in wavelength_cols_final]
+        print(f"Wavelength range: {min(final_wavelength_values):.1f} - {max(final_wavelength_values):.1f} nm")
+        
+        if len(original_wavelength_cols) != len(wavelength_cols_final):
+            print(f"Removed {len(original_wavelength_cols) - len(wavelength_cols_final)} duplicate wavelengths")
+        
+        # Store the final wavelengths for reference
+        self.final_wavelengths = np.array(final_wavelength_values)
+        
+        return df_final
 
 
 class LibsDataPreprocessor:
     """Handles preprocessing and preparation of LIBS data for machine learning."""
     
     @staticmethod
-    def prepare_ml_data(df, target_col='origin'):
+    def prepare_ml_data(df, target_col='origin', test_size=0.2, random_state=42):
         """
-        Prepare DataFrame for machine learning by separating features and targets
+        Prepare DataFrame for machine learning by first splitting into train/test sets,
+        then separating features and targets, and encoding labels
+        
+        Parameters:
+        -----------
+        df : pandas.DataFrame
+            Input DataFrame containing spectral data and labels
+        target_col : str, default='origin'
+            Name of the target column
+        test_size : float, default=0.2
+            Proportion of dataset to include in test split
+        random_state : int, default=42
+            Random state for reproducible splits
+            
+        Returns:
+        --------
+        tuple : (X_train, X_test, y_train, y_test, label_encoder, wavelength_columns)
+            X_train : pandas.DataFrame - Training features
+            X_test : pandas.DataFrame - Test features  
+            y_train : numpy.ndarray - Encoded training labels
+            y_test : numpy.ndarray - Encoded test labels
+            label_encoder : LabelEncoder - Fitted label encoder for inverse transform
+            wavelength_columns : list - List of wavelength column names
         """
         print("="*70)
         print("PREPARING DATA FOR MACHINE LEARNING")
         print("="*70)
         
-        # Define non-feature columns
+        # Step 1: Split the complete DataFrame first
+        print(f"Original dataset shape: {df.shape}")
+        print(f"Target distribution:\n{df[target_col].value_counts()}")
+        
+        print(f"\nSplitting complete dataset (test_size={test_size}, random_state={random_state})...")
+        df_train, df_test = train_test_split(
+            df, test_size=test_size, random_state=random_state, 
+            stratify=df[target_col]
+        )
+        
+        print(f"Training dataset shape: {df_train.shape}")
+        print(f"Test dataset shape: {df_test.shape}")
+        print(f"Training target distribution:\n{df_train[target_col].value_counts()}")
+        print(f"Test target distribution:\n{df_test[target_col].value_counts()}")
+        
+        # Step 2: Define non-feature columns
         non_feature_cols = [
             'tire_number', 'origin', 'measurement_id', 'file_name', 'timestamp',
             'sample_type', 'origin_innerliner', 'origin_sidewall', 'origin_tread'
         ]
         
+        # Step 3: Identify wavelength columns
         # Get all numeric columns
         numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
         
@@ -257,43 +331,63 @@ class LibsDataPreprocessor:
         if len(wavelength_columns) == 0:
             raise ValueError("No wavelength columns found! Please check your dataset structure.")
         
-        # Create feature matrix and target
-        X = df[wavelength_columns].copy()
-        y = df[target_col].copy()
+        print(f"\nIdentified {len(wavelength_columns)} wavelength columns")
         
-        # Ensure all features are numeric
+        # Step 4: Extract features and targets from training set
+        print("Extracting features and targets from training set...")
+        X_train = df_train[wavelength_columns].copy()
+        y_train = df_train[target_col].copy()
+        
+        # Step 5: Extract features and targets from test set
+        print("Extracting features and targets from test set...")
+        X_test = df_test[wavelength_columns].copy()
+        y_test = df_test[target_col].copy()
+        
+        # Step 6: Ensure all features are numeric
+        print("Converting features to numeric...")
         for col in wavelength_columns:
-            X[col] = pd.to_numeric(X[col], errors='coerce')
+            X_train[col] = pd.to_numeric(X_train[col], errors='coerce')
+            X_test[col] = pd.to_numeric(X_test[col], errors='coerce')
         
-        # Handle missing and infinite values
-        missing_count = X.isnull().sum().sum()
-        if missing_count > 0:
-            print(f"Filling {missing_count} missing values with mean...")
-            X = X.fillna(X.mean())
+        # Step 7: Handle missing and infinite values in training set
+        missing_count_train = X_train.isnull().sum().sum()
+        if missing_count_train > 0:
+            print(f"Filling {missing_count_train} missing values in training set with mean...")
+            X_train = X_train.fillna(X_train.mean())
         
-        inf_count = np.isinf(X.values).sum()
-        if inf_count > 0:
-            print(f"Replacing {inf_count} infinite values with mean...")
-            X = X.replace([np.inf, -np.inf], np.nan).fillna(X.mean())
+        inf_count_train = np.isinf(X_train.values).sum()
+        if inf_count_train > 0:
+            print(f"Replacing {inf_count_train} infinite values in training set with mean...")
+            X_train = X_train.replace([np.inf, -np.inf], np.nan).fillna(X_train.mean())
         
-        print(f"Feature matrix shape: {X.shape}")
-        print(f"Target distribution:\n{y.value_counts()}")
+        # Step 8: Handle missing and infinite values in test set (using training set statistics)
+        missing_count_test = X_test.isnull().sum().sum()
+        if missing_count_test > 0:
+            print(f"Filling {missing_count_test} missing values in test set with training mean...")
+            # Use training set mean for test set imputation
+            X_test = X_test.fillna(X_train.mean())
         
-        return X, y, wavelength_columns
-    
-    @staticmethod
-    def split_data(X, y, test_size=0.2, random_state=42):
-        """Split data into train and test sets with stratification"""
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state, stratify=y
-        )
+        inf_count_test = np.isinf(X_test.values).sum()
+        if inf_count_test > 0:
+            print(f"Replacing {inf_count_test} infinite values in test set with training mean...")
+            # Use training set mean for test set imputation
+            X_test = X_test.replace([np.inf, -np.inf], np.nan).fillna(X_train.mean())
         
-        print(f"Training set: {X_train.shape}")
-        print(f"Test set: {X_test.shape}")
-        print(f"Training distribution:\n{y_train.value_counts()}")
-        print(f"Test distribution:\n{y_test.value_counts()}")
+        # Step 9: Encode labels
+        print("Encoding labels...")
+        label_encoder = LabelEncoder()
+        y_train_encoded = label_encoder.fit_transform(y_train)
+        y_test_encoded = label_encoder.transform(y_test)
         
-        return X_train, X_test, y_train, y_test
+        # Step 10: Display final results
+        print(f"\nFinal results:")
+        print(f"Training features shape: {X_train.shape}")
+        print(f"Test features shape: {X_test.shape}")
+        print(f"Label classes: {label_encoder.classes_}")
+        print(f"Training label distribution: {np.bincount(y_train_encoded)}")
+        print(f"Test label distribution: {np.bincount(y_test_encoded)}")
+        
+        return X_train, X_test, y_train_encoded, y_test_encoded, label_encoder, wavelength_columns
 
 
 class LdaAnalyzer:

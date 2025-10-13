@@ -10,7 +10,7 @@ import gc  # Garbage collection for memory management
 import sys
 sys.path.append('..')  # Add parent directory to path
 try:
-    from baseline_correction_functions import BaselineCorrector
+    from utils.baseline_correction_functions import BaselineCorrector
     BASELINE_CORRECTION_AVAILABLE = True
 except ImportError:
     print("Warning: baseline_correction_functions not found. Falling back to basic AsLS.")
