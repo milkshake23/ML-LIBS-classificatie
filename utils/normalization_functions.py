@@ -157,3 +157,25 @@ class Normalizer:
         print(f"  - SNV normalization completed successfully!")
         
         return normalized_data.astype(np.float32)
+
+
+    def apply_area_normalization_to_dataset(self, X_train):
+        """
+        Apply Area Normalization to a X_train dataset.
+        
+        Area Normalization scales the spectrum such that the area under the curve equals one.
+
+        Formula: AreaNorm(x) = x / sum(x)
+
+        Parameters:
+        spectrum: 1D array-like spectrum
+
+        Returns:
+        normalized_spectrum: Area-normalized spectrum
+        """
+        area = np.sum(X_train, axis=1, keepdims=True)
+        if area == 0:
+            print("Warning: Spectrum has zero area, returning original spectrum.")
+            return X_train
+        normalized_spectrum = X_train / area
+        return normalized_spectrum.astype(np.float32)

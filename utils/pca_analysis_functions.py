@@ -146,8 +146,6 @@ class PCAAnalyzer:
             test_components = [
                 self.n_components_95,
                 self.n_components_99,
-                min(100, X_train_scaled.shape[1]),
-                min(200, X_train_scaled.shape[1])
             ]
             # Remove duplicates and sort
             test_components = sorted(list(set(test_components)))
