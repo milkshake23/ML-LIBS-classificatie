@@ -336,7 +336,7 @@ class LDAAnalyzer:
         }
     
     def evaluate_lda_performance(self, X_train_scaled, X_test_scaled, y_train, y_test, 
-                                classifier_name, component_options=None, 
+                                classifier_name, component_options=2, 
                                 label_encoder=None, cv_folds=5):
         """
         Evaluate classifier performance with different numbers of LDA components.

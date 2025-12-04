@@ -24,7 +24,7 @@ class PCAAnalyzer:
         self.explained_variance_ratio_ = None
         self.components_ = None
         self.n_components_95 = None
-        self.n_components_99 = None
+        # self.n_components_99 = None
         self.supported_classifiers = {
             'KNN': {
                 'class': KNeighborsClassifier,
@@ -70,7 +70,7 @@ class PCAAnalyzer:
             }
         }
 
-    def fit_pca_analysis(self, X_train_scaled, variance_thresholds=[0.95, 0.99]):
+    def fit_pca_analysis(self, X_train_scaled, variance_thresholds=[0.95]):
         """
         Perform comprehensive PCA analysis to determine optimal components
         """
@@ -100,20 +100,20 @@ class PCAAnalyzer:
                 
                 if threshold == 0.95:
                     self.n_components_95 = n_components
-                elif threshold == 0.99:
-                    self.n_components_99 = n_components
+                # elif threshold == 0.99:
+                #     self.n_components_99 = n_components
             
             results.update({
                 'explained_variance_ratio': self.explained_variance_ratio_,
                 'cumulative_variance': cumsum_variance,
                 'total_components': len(self.explained_variance_ratio_),
                 'n_components_95': self.n_components_95,
-                'n_components_99': self.n_components_99
+                # 'n_components_99': self.n_components_99
             })
             
             print(f"✅ PCA analysis completed successfully")
             print(f"   Components for 95% variance: {self.n_components_95}")
-            print(f"   Components for 99% variance: {self.n_components_99}")
+            # print(f"   Components for 99% variance: {self.n_components_99}")
             
             return results
             
@@ -122,7 +122,7 @@ class PCAAnalyzer:
             raise e
     
     def evaluate_pca_performance(self, X_train_scaled, X_test_scaled, y_train, y_test, 
-                               classifier_name='KNN', label_encoder=None, 
+                               classifier_name=None, label_encoder=None, 
                                test_components=None):
         """
         Evaluate classification performance with different PCA components
@@ -130,7 +130,7 @@ class PCAAnalyzer:
         print(f"\n🔍 Starting PCA performance evaluation...")
         
         # Validation checks
-        if self.n_components_95 is None or self.n_components_99 is None:
+        if self.n_components_95 is None:
             raise ValueError("Please run fit_pca_analysis first!")
         
         if X_train_scaled is None or X_test_scaled is None:
@@ -145,7 +145,7 @@ class PCAAnalyzer:
         if test_components is None:
             test_components = [
                 self.n_components_95,
-                self.n_components_99,
+                # self.n_components_99,
             ]
             # Remove duplicates and sort
             test_components = sorted(list(set(test_components)))
@@ -215,7 +215,7 @@ class PCAAnalyzer:
                 print(f"   Accuracy: {best_result['accuracy']:.4f}")
                 print(f"   Variance explained: {best_result['variance_explained']:.3f}")
             
-            return results
+            return results, X_train_pca, X_test_pca
             
         except Exception as e:
             print(f"❌ Error in performance evaluation: {e}")

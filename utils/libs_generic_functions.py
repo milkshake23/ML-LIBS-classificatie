@@ -250,7 +250,137 @@ class LibsDataLoader:
         self.final_wavelengths = np.array(final_wavelength_values)
         
         return df_final
+    
+    def load_all_measurements_no_rounding(self, max_files=None):
+        """
+        Load all measurements into a DataFrame with memory-efficient approach
+        """
+        print("="*70)
+        print("MEMORY-EFFICIENT LOADING OF ALL INDIVIDUAL MEASUREMENTS")
+        print("="*70)
+        
+        # First pass: count total measurements and get wavelength info
+        measurement_count = 0
+        wavelength_info = None
+        
+        print("First pass: Counting measurements...")
+        for measurement in self.process_file_generator(max_files):
+            measurement_count += 1
+            if wavelength_info is None:
+                n_wavelengths = len(measurement['intensities'])
+                wavelength_info = n_wavelengths
+            
+            if measurement_count % 10000 == 0:
+                print(f"  Counted {measurement_count:,} measurements...")
+        
+        print(f"Total measurements found: {measurement_count:,}")
+        print(f"Wavelengths per spectrum: {wavelength_info}")
+        
+        # Pre-allocate numpy arrays for maximum memory efficiency
+        print("Pre-allocating memory-efficient arrays...")
+        X_data = np.empty((measurement_count, wavelength_info), dtype=np.float32)
+        y_data = np.empty(measurement_count, dtype='U10')
+        metadata = np.empty((measurement_count, 2), dtype=np.int32)
+        
+        # Second pass: fill the arrays
+        print("Second pass: Loading data into arrays...")
+        idx = 0
+        for measurement in self.process_file_generator(max_files):
+            X_data[idx] = measurement['intensities']
+            y_data[idx] = measurement['origin']
+            metadata[idx, 0] = measurement['tire_number']
+            metadata[idx, 1] = measurement['measurement_id']
+            
+            idx += 1
+            
+            if idx % 10000 == 0:
+                print(f"  Loaded {idx:,}/{measurement_count:,} measurements ({idx/measurement_count*100:.1f}%)")
+                gc.collect()
+        
+        # Create DataFrame efficiently
+        print("Creating final DataFrame...")
+        wavelength_columns = [f'{wl:.3f}' for wl in np.linspace(200, 1000, wavelength_info)]
+        
+        df_individual = pd.DataFrame(X_data, columns=wavelength_columns, dtype=np.float32)
+        df_individual['origin'] = y_data
+        df_individual['tire_number'] = metadata[:, 0]  
+        df_individual['measurement_id'] = metadata[:, 1]
+        
+        # Clean up intermediate arrays
+        del X_data, y_data, metadata
+        gc.collect()
+        
+        print(f"\n" + "="*70)
+        print("MEMORY-EFFICIENT DATASET CREATED")
+        print("="*70)
+        print(f"Total measurements: {len(df_individual):,}")
+        print(f"Dataset shape: {df_individual.shape}")
+        print(f"Memory usage: {df_individual.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
+        
+        return df_individual
 
+    def round_wavelengths(self, df):
+        """
+        Round wavelength columns to one decimal place and remove duplicates by averaging
+        """
+        print("Rounding wavelength columns and removing duplicates...")
+        
+        non_feature_cols = ['tire_number', 'origin', 'measurement_id']
+        original_wavelength_cols = [col for col in df.columns if col not in non_feature_cols]
+    
+        print(f"Original wavelength columns: {len(original_wavelength_cols)}")
+    
+        # Convert column names to floats, round, and find unique values
+        original_wavelengths = [float(col) for col in original_wavelength_cols]
+        rounded_wavelengths = np.round(original_wavelengths, 1)
+        
+        # Create mapping from original to rounded wavelengths
+        wavelength_mapping = {}
+        for orig_col, rounded_wl in zip(original_wavelength_cols, rounded_wavelengths):
+            rounded_col_name = f'{rounded_wl:.1f}'
+            if rounded_col_name not in wavelength_mapping:
+                wavelength_mapping[rounded_col_name] = []
+            wavelength_mapping[rounded_col_name].append(orig_col)
+        
+        print(f"After rounding: {len(wavelength_mapping)} unique wavelengths")
+        
+        # Create new DataFrame with rounded and deduplicated wavelength columns
+        print("Creating DataFrame with deduplicated wavelength columns...")
+        
+        # Start with metadata columns
+        new_df_data = {}
+        for col in non_feature_cols:
+            new_df_data[col] = df[col].values
+        
+        # Process wavelength columns - combine duplicates by averaging
+        for rounded_wl, orig_cols in wavelength_mapping.items():
+            if len(orig_cols) == 1:
+                # No duplicates, just rename
+                new_df_data[rounded_wl] = df[orig_cols[0]].values
+            else:
+                # Multiple columns map to same rounded wavelength - average them
+                combined_values = df[orig_cols].mean(axis=1).values
+                new_df_data[rounded_wl] = combined_values
+                print(f"  Averaged {len(orig_cols)} columns into {rounded_wl} nm")
+        
+        # Create final DataFrame
+        df_final = pd.DataFrame(new_df_data)
+        
+        # Reorder columns: metadata first, then wavelengths in sorted order
+        wavelength_cols_final = sorted([col for col in df_final.columns if col not in non_feature_cols], 
+                                    key=lambda x: float(x))
+        column_order = non_feature_cols + wavelength_cols_final
+        df_final = df_final[column_order]
+        # Final verification - check for any remaining duplicate columns
+        duplicate_cols = df_final.columns[df_final.columns.duplicated()]
+        if len(duplicate_cols) > 0:
+            print(f"Warning: Found {len(duplicate_cols)} duplicate columns in final DataFrame!")
+            print(f"Duplicate columns: {duplicate_cols.tolist()}")
+            # Remove duplicates by keeping the first occurrence
+            df_final = df_final.loc[:, ~df_final.columns.duplicated()]
+            print(f"Removed duplicates, final shape: {df_final.shape}")
+        print(f"\nFinal dataset shape: {df_final.shape}")
+        return df_final
 
 class LibsDataPreprocessor:
     """Handles preprocessing and preparation of LIBS data for machine learning."""
