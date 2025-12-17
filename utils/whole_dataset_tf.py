@@ -1,11 +1,8 @@
 import pandas as pd # type: ignore
 import tensorflow as tf # type: ignore
 import numpy as np # type: ignore
-import h5py # type: ignore
-import os # type: ignore
 from sklearn.preprocessing import LabelEncoder # type: ignore
 from sklearn.model_selection import train_test_split # type: ignore
-import gc  # Garbage collection for memory management
 
 def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='origin', batch_size=32, 
                                                            prefetch_buffer=tf.data.AUTOTUNE, cache_dataset=True, 
@@ -14,7 +11,8 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
                                                            dimensionality_reduction='none',
                                                            pca_components=None, pca_variance_threshold=0.95,
                                                            lda_components=None, 
-                                                           wavelength_ranges=[(650, 750), (950, 960)]):
+                                                           wavelength_ranges=[(650, 750), (950, 960)], 
+                                                           include_brands=False):
     """
     Create a TensorFlow Dataset from a LIBS DataFrame with early normalization and dimensionality reduction.
     
@@ -23,7 +21,7 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
     df : pandas.DataFrame
         DataFrame containing spectral data and labels
     label_column : str, default='origin'
-        Name of the column containing class labels
+        Name of the column containing class labels (ignored if include_brands=True)
     batch_size : int, default=32
         Batch size for training
     prefetch_buffer : tf.data.AUTOTUNE, default=tf.data.AUTOTUNE
@@ -44,7 +42,7 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         - 'pca': Principal Component Analysis
         - 'lda': Linear Discriminant Analysis
         - 'wavelength': Select specific wavelength ranges
-        - 'nist' : Wavelengths selected based on NIST emmision records corresponding to the elements present in car tires (C, H, Al, Fe, etc) 
+        - 'nist': Wavelengths selected based on NIST emission records
     pca_components : int, optional
         Number of PCA components. If None, uses pca_variance_threshold
     pca_variance_threshold : float, default=0.95
@@ -53,6 +51,8 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         Number of LDA components. If None, uses maximum possible (n_classes-1)
     wavelength_ranges : list, default=[(650, 750), (950, 960)]
         List of wavelength ranges (min, max) to select for 'wavelength' reduction
+    include_brands : bool, default=False
+        If True, uses 'brand' column as target variable instead of label_column
     
     Returns:
     --------
@@ -60,32 +60,42 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
     """
     import gc
     from utils.normalization_functions import Normalizer
-    from utils.pca_analysis_functions import PCAAnalyzer
-    from utils.lda_analysis_functions import LDAAnalyzer
-    from sklearn.decomposition import PCA #type: ignore
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis #type: ignore
+    from sklearn.decomposition import PCA # type: ignore
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis # type: ignore
 
+    # Determine which column to use as target
+    if include_brands:
+        if 'brand' not in df.columns:
+            raise ValueError("'brand' column not found in DataFrame. Cannot use include_brands=True")
+        target_column = 'brand'
+        print(f"🎯 Using BRAND as target variable")
+    else:
+        target_column = label_column
+        print(f"🎯 Using {target_column.upper()} as target variable")
+    
     print(f"📊 Processing DataFrame with {len(df):,} samples...")
     print(f"🔧 Dimensionality reduction: {dimensionality_reduction.upper()}")
     
     # Validate input DataFrame
-    if label_column not in df.columns:
-        raise ValueError(f"Label column '{label_column}' not found in DataFrame. Available columns: {list(df.columns)}")
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in DataFrame. Available columns: {list(df.columns)}")
     
-    # Identify wavelength columns (assuming they are numeric column names)
-    wavelength_columns = [col for col in df.columns if col != label_column and str(col).replace('.', '').isdigit()]
+    # Identify wavelength columns (numeric columns, excluding metadata)
+    non_feature_cols = ['tire_number', 'origin', 'measurement_id', 'brand']
+    wavelength_columns = [col for col in df.columns 
+                         if col not in non_feature_cols and str(col).replace('.', '').replace('-', '').isdigit()]
     
     if not wavelength_columns:
-        # If no numeric columns found, assume all columns except label_column are wavelengths
-        wavelength_columns = [col for col in df.columns if col != label_column]
+        # Fallback: assume all columns except known metadata are wavelengths
+        wavelength_columns = [col for col in df.columns if col not in non_feature_cols]
     
     print(f"Found {len(wavelength_columns)} wavelength features")
     print(f"Wavelength range: {min([float(col) for col in wavelength_columns]):.1f} - {max([float(col) for col in wavelength_columns]):.1f} nm")
     
-    # Step 1: Extract X and y first
+    # Step 1: Extract X and y
     print("🔄 Extracting spectral data and labels...")
     X = df[wavelength_columns].values.astype(np.float32)
-    y_str = df[label_column].values
+    y_str = df[target_column].values
     
     # Clear DataFrame from memory if possible
     del df
@@ -94,13 +104,13 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
     # Step 2: Encode labels early
     print("🔄 Encoding labels...")
     label_encoder = LabelEncoder()
-    y = label_encoder.fit_transform(y_str).astype(np.int8)
+    y = label_encoder.fit_transform(y_str).astype(np.int8 if len(np.unique(y_str)) < 128 else np.int16)
     
     print(f"Label encoding: {dict(zip(label_encoder.classes_, range(len(label_encoder.classes_))))}")
     
     # Display class distribution
     unique_labels, counts = np.unique(y, return_counts=True)
-    print("Class distribution:")
+    print(f"\n📊 Class distribution ({target_column}):")
     for label_idx, count in zip(unique_labels, counts):
         class_name = label_encoder.classes_[label_idx]
         percentage = (count / len(y)) * 100
@@ -110,13 +120,12 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
     del y_str
     gc.collect()
     
-    # Step 3: Normalize X before dimensionality reduction (more memory efficient)
+    # Step 3: Normalize X before dimensionality reduction
     if normalize_data:
-        print("🔄 Normalizing spectral data with SNV...")
+        print("\n🔄 Normalizing spectral data with SNV...")
         normalizer = Normalizer()
         
-        # Process in chunks to avoid memory issues
-        chunk_size = 10000  # Process 10k samples at a time
+        chunk_size = 10000
         n_chunks = (len(X) + chunk_size - 1) // chunk_size
         
         for i in range(n_chunks):
@@ -126,12 +135,11 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
             if i % 10 == 0:
                 print(f"  Normalizing chunk {i+1}/{n_chunks} ({start_idx:,}-{end_idx:,})")
             
-            # Apply SNV normalization to chunk
             X[start_idx:end_idx] = normalizer.apply_standard_normal_variate_on_dataset(
                 X[start_idx:end_idx]
             )
             
-            if i % 20 == 0:  # Periodic garbage collection
+            if i % 20 == 0:
                 gc.collect()
         
         print("✅ Normalization completed")
@@ -141,10 +149,9 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
     reduction_info = {'method': dimensionality_reduction}
     
     if dimensionality_reduction.lower() == 'pca':
-        print("🔄 Applying PCA dimensionality reduction...")
+        print("\n🔄 Applying PCA dimensionality reduction...")
         
         if pca_components is None:
-            # Determine components based on variance threshold
             pca_temp = PCA()
             pca_temp.fit(X)
             cumsum_variance = np.cumsum(pca_temp.explained_variance_ratio_)
@@ -165,7 +172,7 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         print(f"  📊 Variance explained: {reduction_info['variance_explained']:.3f}")
         
     elif dimensionality_reduction.lower() == 'lda':
-        print("🔄 Applying LDA dimensionality reduction...")
+        print("\n🔄 Applying LDA dimensionality reduction...")
         
         n_classes = len(np.unique(y))
         max_lda_components = n_classes - 1
@@ -192,14 +199,12 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         print(f"  📊 Variance explained: {reduction_info['variance_explained']:.3f}")
         
     elif dimensionality_reduction.lower() == 'wavelength':
-        print("🔄 Applying wavelength range selection...")
+        print("\n🔄 Applying wavelength range selection...")
         
-        # Convert wavelength column names to float for comparison
         wavelength_values = [float(col) for col in wavelength_columns]
         selected_indices = []
         selected_wavelengths = []
         
-        # Select wavelengths within specified ranges
         for i, wl in enumerate(wavelength_values):
             for wl_min, wl_max in wavelength_ranges:
                 if wl_min <= wl <= wl_max:
@@ -210,7 +215,6 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         if not selected_indices:
             raise ValueError(f"No wavelengths found in specified ranges: {wavelength_ranges}")
         
-        # Apply selection
         X = X[:, selected_indices]
         
         reduction_info.update({
@@ -220,7 +224,6 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
             'n_wavelengths': len(selected_wavelengths)
         })
         
-        # Show range statistics
         for wl_min, wl_max in wavelength_ranges:
             range_wavelengths = [wl for wl in selected_wavelengths if wl_min <= wl <= wl_max]
             print(f"  Range {wl_min}-{wl_max}nm: {len(range_wavelengths)} wavelengths")
@@ -229,30 +232,25 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         print(f"  📊 Feature reduction: {(1 - len(selected_wavelengths)/original_features)*100:.1f}%")
 
     elif dimensionality_reduction.lower() == 'nist':
-        print("🔄 Applying NIST wavelength selection...")
+        print("\n🔄 Applying NIST wavelength selection...")
     
-        nist_df = pd.read_csv('../data/csv/nist_top_50_percent_wavelengths.csv')
+        nist_df = pd.read_csv('data/csv/nist_top_50_percent_wavelengths.csv')
         
-        # Extract all unique wavelengths from nist_df
         nist_wavelengths_set = set()
         for column in nist_df.columns:
-            # Get wavelengths from this element column, drop NaN values
             element_wavelengths = nist_df[column].dropna().tolist()
             nist_wavelengths_set.update([float(wl) for wl in element_wavelengths if pd.notna(wl)])
         
         print(f"  Found {len(nist_wavelengths_set)} unique NIST wavelengths")
         print(f"  NIST wavelength range: {min(nist_wavelengths_set):.1f} - {max(nist_wavelengths_set):.1f} nm")
         
-        # Convert wavelength column names to float for comparison
         wavelength_values = [float(col) for col in wavelength_columns]
         selected_indices = []
         selected_wavelengths = []
         
-        # Find wavelengths to keep (with tolerance for matching)
-        tolerance = 0.1  # 0.1 nm tolerance for floating point comparison
+        tolerance = 0.1
         
         for i, wl in enumerate(wavelength_values):
-            # Check if this wavelength is close to any NIST wavelength
             for nist_wl in nist_wavelengths_set:
                 if abs(wl - nist_wl) <= tolerance:
                     selected_indices.append(i)
@@ -262,17 +260,14 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         if not selected_indices:
             raise ValueError("No wavelengths found matching NIST database within tolerance")
         
-        # Apply NIST wavelength selection
         X = X[:, selected_indices]
         
-        # Count wavelengths per element for reporting
         element_counts = {}
         for column in nist_df.columns:
             element_name = column.replace('_data', '')
             element_wavelengths = nist_df[column].dropna().tolist()
             element_wavelengths_float = [float(wl) for wl in element_wavelengths if pd.notna(wl)]
             
-            # Count how many of this element's wavelengths were selected
             element_selected = 0
             for selected_wl in selected_wavelengths:
                 for element_wl in element_wavelengths_float:
@@ -291,36 +286,25 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
             'nist_wavelength_range': (min(nist_wavelengths_set), max(nist_wavelengths_set))
         })
         
-        # Display element-wise statistics
         print(f"  ✅ NIST selection: {original_features} → {len(selected_wavelengths)} features")
         print(f"  📊 Feature reduction: {(1 - len(selected_wavelengths)/original_features)*100:.1f}%")
         print(f"  🎯 Matched {len(selected_wavelengths)}/{len(nist_wavelengths_set)} NIST wavelengths")
         
-        # Show wavelengths per element
         print("  📋 Wavelengths selected per element:")
         for element, count in element_counts.items():
             if count > 0:
                 print(f"     {element}: {count} wavelengths")
-        
-        # Show some example selected wavelengths
-        if len(selected_wavelengths) <= 10:
-            print(f"  📍 Selected wavelengths: {[f'{wl:.1f}' for wl in sorted(selected_wavelengths)]}")
-        else:
-            sorted_wl = sorted(selected_wavelengths)
-            print(f"  📍 Selected wavelengths (sample): {[f'{wl:.1f}' for wl in sorted_wl[:5]]} ... {[f'{wl:.1f}' for wl in sorted_wl[-5:]]}")
-        
-
 
     elif dimensionality_reduction.lower() != 'none':
         raise ValueError(f"Unknown dimensionality reduction method: {dimensionality_reduction}. "
                         "Choose from: 'none', 'pca', 'lda', 'wavelength' or 'nist'")
     
     else:
-        print("🔄 No dimensionality reduction applied")
+        print("\n🔄 No dimensionality reduction applied")
         reduction_info['n_components'] = original_features
     
-    # Step 5: Split reduced data into train/test/val
-    print("🔄 Splitting data...")
+    # Step 5: Split data
+    print("\n🔄 Splitting data...")
     if test_size > 0:
         X_temp, X_test, y_temp, y_test = train_test_split(
             X, y, test_size=test_size, random_state=random_state, stratify=y
@@ -337,7 +321,6 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         X_train, y_train = X_temp, y_temp
         X_val, y_val = np.array([]), np.array([])
     
-    # Clear temporary variables
     del X, y, X_temp, y_temp
     gc.collect()
     
@@ -348,10 +331,9 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         print(f"Test set: {X_test.shape[0]:,} samples")
     
     # Step 6: Create TensorFlow datasets
-    print("🔄 Creating TensorFlow datasets...")
+    print("\n🔄 Creating TensorFlow datasets...")
     
     def create_tf_dataset(X, y, batch_size, is_training=True):
-        """Create a TensorFlow dataset with optimizations"""
         if len(X) == 0:
             return None
             
@@ -369,7 +351,6 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         
         return dataset
     
-    # Create datasets
     train_dataset = create_tf_dataset(X_train, y_train, batch_size, is_training=True)
     val_dataset = create_tf_dataset(X_val, y_val, batch_size, is_training=False) if len(X_val) > 0 else None
     test_dataset = create_tf_dataset(X_test, y_test, batch_size, is_training=False) if len(X_test) > 0 else None
@@ -389,28 +370,295 @@ def create_libs_tensorflow_dataset_from_dataframe_normalized(df, label_column='o
         'validation_steps': (len(X_val) // batch_size) if len(X_val) > 0 else 0,
         'wavelength_range': (min([float(col) for col in wavelength_columns]), 
                            max([float(col) for col in wavelength_columns])),
-        'label_column': label_column,
+        'target_column': target_column,
+        'predicting_brands': include_brands,
         'normalized': normalize_data,
         'data_type': str(X_train.dtype),
         'dimensionality_reduction': reduction_info
     }
     
     print(f"\n🎯 TensorFlow Dataset created successfully!")
+    print(f"   • Target variable: {target_column.upper()}")
     print(f"   • Total samples: {dataset_info['total_samples']:,}")
     print(f"   • Features per sample: {dataset_info['n_features']:,} (reduced from {original_features:,})")
     if dataset_info['n_features'] != original_features:
         print(f"   • Feature reduction: {(1 - dataset_info['n_features']/original_features)*100:.1f}%")
-    print(f"   • Classes: {dataset_info['n_classes']} ({', '.join(dataset_info['class_names'])})")
+    print(f"   • Classes: {dataset_info['n_classes']} ({', '.join(dataset_info['class_names'][:5])}{'...' if len(dataset_info['class_names']) > 5 else ''})")
     print(f"   • Original wavelength range: {dataset_info['wavelength_range'][0]:.1f} - {dataset_info['wavelength_range'][1]:.1f} nm")
     print(f"   • Data normalized: {dataset_info['normalized']}")
     print(f"   • Dimensionality reduction: {dimensionality_reduction.upper()}")
-    print(f"   • Data type: {dataset_info['data_type']}")
-    print(f"   • Steps per epoch: {dataset_info['steps_per_epoch']}")
-    if dataset_info['validation_steps'] > 0:
-        print(f"   • Validation steps: {dataset_info['validation_steps']}")
     
-    # Memory usage report
     memory_usage = (X_train.nbytes + X_val.nbytes + X_test.nbytes + y_train.nbytes + y_val.nbytes + y_test.nbytes) / 1024**2
     print(f"   • Memory usage: ~{memory_usage:.1f} MB")
     
     return train_dataset, val_dataset, test_dataset, label_encoder, dataset_info
+
+def create_libs_tensorflow_dataset_multi_output(df, label_column='origin', batch_size=32, 
+                                                prefetch_buffer=tf.data.AUTOTUNE, cache_dataset=True, 
+                                                test_size=0.2, val_size=0.2, 
+                                                random_state=42, normalize_data=True,
+                                                dimensionality_reduction='none', pca_variance_threshold=0.95,
+                                                lda_components=None, 
+                                                wavelength_ranges=[(650, 750), (950, 960)],
+                                                multi_output=False, # New Parameter
+                                                **kwargs): # Catching other args for brevity
+    import gc
+    from utils.normalization_functions import Normalizer
+    from sklearn.decomposition import PCA # type: ignore
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from sklearn.preprocessing import LabelEncoder
+    from sklearn.model_selection import train_test_split
+
+    # 1. Identify Features
+    non_feature_cols = ['tire_number', 'origin', 'measurement_id', 'brand']
+    wavelength_columns = [col for col in df.columns if col not in non_feature_cols]
+    X = df[wavelength_columns].values.astype(np.float32)
+
+    # 2. Handle Label Encoding
+    encoders = {}
+    if multi_output:
+        print("🎯 Multi-output mode: Targeting BRAND and ORIGIN")
+        brand_enc = LabelEncoder()
+        origin_enc = LabelEncoder()
+        
+        y_brand = brand_enc.fit_transform(df['brand']).astype(np.int32)
+        y_origin = origin_enc.fit_transform(df['origin']).astype(np.int32)
+        
+        # We store them in a way that we can split them together
+        y_combined = np.column_stack((y_brand, y_origin))
+        encoders = {'brand': brand_enc, 'origin': origin_enc}
+    else:
+        target_col = 'brand' if kwargs.get('include_brands') else label_column
+        print(f"🎯 Single-output mode: Targeting {target_col}")
+        enc = LabelEncoder()
+        y_combined = enc.fit_transform(df[target_col]).astype(np.int32)
+        encoders = {'target': enc}
+
+    # Step 3: Normalize X before dimensionality reduction
+    if normalize_data:
+        print("\n🔄 Normalizing spectral data with SNV...")
+        normalizer = Normalizer()
+        
+        chunk_size = 10000
+        n_chunks = (len(X) + chunk_size - 1) // chunk_size
+        
+        for i in range(n_chunks):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, len(X))
+            
+            if i % 10 == 0:
+                print(f"  Normalizing chunk {i+1}/{n_chunks} ({start_idx:,}-{end_idx:,})")
+            
+            X[start_idx:end_idx] = normalizer.apply_standard_normal_variate_on_dataset(
+                X[start_idx:end_idx]
+            )
+            
+            if i % 20 == 0:
+                gc.collect()
+        
+        print("✅ Normalization completed")
+    
+    # Step 4: Apply dimensionality reduction
+    original_features = X.shape[1]
+    reduction_info = {'method': dimensionality_reduction}
+    
+    if dimensionality_reduction.lower() == 'pca':
+        print("\n🔄 Applying PCA dimensionality reduction...")
+        
+        if pca_components is None:
+            pca_temp = PCA()
+            pca_temp.fit(X)
+            cumsum_variance = np.cumsum(pca_temp.explained_variance_ratio_)
+            pca_components = np.argmax(cumsum_variance >= pca_variance_threshold) + 1
+            print(f"  Auto-selected {pca_components} components for {pca_variance_threshold*100:.1f}% variance")
+        
+        pca = PCA(n_components=pca_components)
+        X = pca.fit_transform(X)
+        
+        reduction_info.update({
+            'n_components': pca_components,
+            'variance_explained': np.sum(pca.explained_variance_ratio_),
+            'explained_variance_ratio': pca.explained_variance_ratio_,
+            'pca_model': pca
+        })
+        
+        print(f"  ✅ PCA: {original_features} → {pca_components} features")
+        print(f"  📊 Variance explained: {reduction_info['variance_explained']:.3f}")
+        
+    elif dimensionality_reduction.lower() == 'lda':
+        print("\n🔄 Applying LDA dimensionality reduction...")
+        
+        n_classes = len(np.unique(y))
+        max_lda_components = n_classes - 1
+        
+        if lda_components is None:
+            lda_components = max_lda_components
+            print(f"  Auto-selected {lda_components} components (max for {n_classes} classes)")
+        else:
+            lda_components = min(lda_components, max_lda_components)
+            print(f"  Using {lda_components} components (limited by {n_classes} classes)")
+        
+        lda = LinearDiscriminantAnalysis(n_components=lda_components)
+        X = lda.fit_transform(X, y)
+        
+        reduction_info.update({
+            'n_components': lda_components,
+            'max_possible_components': max_lda_components,
+            'variance_explained': np.sum(lda.explained_variance_ratio_),
+            'explained_variance_ratio': lda.explained_variance_ratio_,
+            'lda_model': lda
+        })
+        
+        print(f"  ✅ LDA: {original_features} → {lda_components} features")
+        print(f"  📊 Variance explained: {reduction_info['variance_explained']:.3f}")
+        
+    elif dimensionality_reduction.lower() == 'wavelength':
+        print("\n🔄 Applying wavelength range selection...")
+        
+        wavelength_values = [float(col) for col in wavelength_columns]
+        selected_indices = []
+        selected_wavelengths = []
+        
+        for i, wl in enumerate(wavelength_values):
+            for wl_min, wl_max in wavelength_ranges:
+                if wl_min <= wl <= wl_max:
+                    selected_indices.append(i)
+                    selected_wavelengths.append(wl)
+                    break
+        
+        if not selected_indices:
+            raise ValueError(f"No wavelengths found in specified ranges: {wavelength_ranges}")
+        
+        X = X[:, selected_indices]
+        
+        reduction_info.update({
+            'wavelength_ranges': wavelength_ranges,
+            'selected_wavelengths': selected_wavelengths,
+            'selected_indices': selected_indices,
+            'n_wavelengths': len(selected_wavelengths)
+        })
+        
+        for wl_min, wl_max in wavelength_ranges:
+            range_wavelengths = [wl for wl in selected_wavelengths if wl_min <= wl <= wl_max]
+            print(f"  Range {wl_min}-{wl_max}nm: {len(range_wavelengths)} wavelengths")
+        
+        print(f"  ✅ Wavelength selection: {original_features} → {len(selected_wavelengths)} features")
+        print(f"  📊 Feature reduction: {(1 - len(selected_wavelengths)/original_features)*100:.1f}%")
+
+    elif dimensionality_reduction.lower() == 'nist':
+        print("\n🔄 Applying NIST wavelength selection...")
+    
+        nist_df = pd.read_csv('data/csv/nist_top_50_percent_wavelengths.csv')
+        
+        nist_wavelengths_set = set()
+        for column in nist_df.columns:
+            element_wavelengths = nist_df[column].dropna().tolist()
+            nist_wavelengths_set.update([float(wl) for wl in element_wavelengths if pd.notna(wl)])
+        
+        print(f"  Found {len(nist_wavelengths_set)} unique NIST wavelengths")
+        print(f"  NIST wavelength range: {min(nist_wavelengths_set):.1f} - {max(nist_wavelengths_set):.1f} nm")
+        
+        wavelength_values = [float(col) for col in wavelength_columns]
+        selected_indices = []
+        selected_wavelengths = []
+        
+        tolerance = 0.1
+        
+        for i, wl in enumerate(wavelength_values):
+            for nist_wl in nist_wavelengths_set:
+                if abs(wl - nist_wl) <= tolerance:
+                    selected_indices.append(i)
+                    selected_wavelengths.append(wl)
+                    break
+        
+        if not selected_indices:
+            raise ValueError("No wavelengths found matching NIST database within tolerance")
+        
+        X = X[:, selected_indices]
+        
+        element_counts = {}
+        for column in nist_df.columns:
+            element_name = column.replace('_data', '')
+            element_wavelengths = nist_df[column].dropna().tolist()
+            element_wavelengths_float = [float(wl) for wl in element_wavelengths if pd.notna(wl)]
+            
+            element_selected = 0
+            for selected_wl in selected_wavelengths:
+                for element_wl in element_wavelengths_float:
+                    if abs(selected_wl - element_wl) <= tolerance:
+                        element_selected += 1
+                        break
+            element_counts[element_name] = element_selected
+        
+        reduction_info.update({
+            'nist_wavelengths_available': len(nist_wavelengths_set),
+            'nist_wavelengths_matched': len(selected_wavelengths),
+            'selected_wavelengths': selected_wavelengths,
+            'selected_indices': selected_indices,
+            'wavelength_tolerance': tolerance,
+            'element_wavelength_counts': element_counts,
+            'nist_wavelength_range': (min(nist_wavelengths_set), max(nist_wavelengths_set))
+        })
+        
+        print(f"  ✅ NIST selection: {original_features} → {len(selected_wavelengths)} features")
+        print(f"  📊 Feature reduction: {(1 - len(selected_wavelengths)/original_features)*100:.1f}%")
+        print(f"  🎯 Matched {len(selected_wavelengths)}/{len(nist_wavelengths_set)} NIST wavelengths")
+        
+        print("  📋 Wavelengths selected per element:")
+        for element, count in element_counts.items():
+            if count > 0:
+                print(f"     {element}: {count} wavelengths")
+
+    elif dimensionality_reduction.lower() != 'none':
+        raise ValueError(f"Unknown dimensionality reduction method: {dimensionality_reduction}. "
+                        "Choose from: 'none', 'pca', 'lda', 'wavelength' or 'nist'")
+    
+    else:
+        print("\n🔄 No dimensionality reduction applied")
+        reduction_info['n_components'] = original_features
+
+    # 5. Split Data (Stratified on Origin to ensure even geographic distribution)
+    print("\n🔄 Splitting data...")
+    stratify_col = df['origin'] if multi_output else y_combined
+    
+    X_train_raw, X_test_raw, y_train_raw, y_test_raw = train_test_split(
+        X, y_combined, test_size=test_size, random_state=random_state, stratify=stratify_col
+    )
+    
+    X_train_raw, X_val_raw, y_train_raw, y_val_raw = train_test_split(
+        X_train_raw, y_train_raw, test_size=val_size, random_state=random_state, stratify=y_train_raw[:, 1] if multi_output else y_train_raw
+    )
+
+    # 6. Reformat labels for the Functional API
+    def format_labels(y_array):
+        if multi_output:
+            # Keys MUST match the 'name' attribute in your model layers
+            return {
+                'brand_output': y_array[:, 0],
+                'origin_output': y_array[:, 1]
+            }
+        return y_array
+
+    # 7. Create TF Datasets
+    def create_tf_dataset(X_data, y_data, is_training=True):
+        dataset = tf.data.Dataset.from_tensor_slices((X_data, format_labels(y_data)))
+        if is_training:
+            dataset = dataset.shuffle(10000)
+        dataset = dataset.batch(batch_size)
+        if cache_dataset:
+            dataset = dataset.cache()
+        return dataset.prefetch(prefetch_buffer)
+
+    train_ds = create_tf_dataset(X_train_raw, y_train_raw, is_training=True)
+    val_ds = create_tf_dataset(X_val_raw, y_val_raw, is_training=False)
+    test_ds = create_tf_dataset(X_test_raw, y_test_raw, is_training=False)
+
+    # Update dataset_info for the multi-output architecture
+    dataset_info = {
+        'multi_output': multi_output,
+        'n_features': X.shape[1],
+        'brand_classes': len(brand_enc.classes_) if multi_output else None,
+        'origin_classes': len(origin_enc.classes_) if multi_output else None
+    }
+
+    return train_ds, val_ds, test_ds, encoders, dataset_info
