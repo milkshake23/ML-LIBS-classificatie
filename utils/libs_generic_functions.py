@@ -724,3 +724,152 @@ def analyze_lda_interpretability(lda_analyzer, X_columns):
         
         plt.tight_layout()
         plt.show()
+
+
+def plot_single_spectrum(spectrum, wavelengths=None, title='LIBS Spectrum', 
+                        xlabel='Wavelength (nm)', ylabel='Intensity (a.u.)',
+                        figsize=(12, 6), color='blue', linewidth=1.5, 
+                        grid=True, annotate_peaks=False, peak_threshold=None,
+                        save_path=None):
+    """
+    Plot a single LIBS spectrum
+    
+    Parameters:
+    -----------
+    spectrum : array-like
+        1D array of intensity values for the spectrum
+    wavelengths : array-like, optional
+        Wavelength values corresponding to the spectrum intensities.
+        If None, uses feature indices.
+    title : str, default='LIBS Spectrum'
+        Title for the plot
+    xlabel : str, default='Wavelength (nm)'
+        Label for x-axis
+    ylabel : str, default='Intensity (a.u.)'
+        Label for y-axis
+    figsize : tuple, default=(12, 6)
+        Figure size (width, height) in inches
+    color : str, default='blue'
+        Color for the spectrum line
+    linewidth : float, default=1.5
+        Width of the spectrum line
+    grid : bool, default=True
+        Whether to show grid
+    annotate_peaks : bool, default=False
+        Whether to annotate the highest peaks
+    peak_threshold : float, optional
+        If annotate_peaks is True, only annotate peaks above this intensity value.
+        If None, annotates top 5 peaks.
+    save_path : str, optional
+        If provided, saves the plot to this file path
+    
+    Returns:
+    --------
+    fig, ax : matplotlib figure and axis objects
+    
+    Example:
+    --------
+    >>> # Plot with wavelengths
+    >>> wavelengths = np.linspace(200, 1000, 8000)
+    >>> spectrum = df.iloc[0, 3:].values  # Get first spectrum
+    >>> plot_single_spectrum(spectrum, wavelengths=wavelengths, 
+    ...                      title='Tread Sample #1')
+    
+    >>> # Plot without wavelengths (using indices)
+    >>> plot_single_spectrum(spectrum, title='Sample Spectrum')
+    
+    >>> # Plot with peak annotations
+    >>> plot_single_spectrum(spectrum, wavelengths=wavelengths,
+    ...                      annotate_peaks=True, peak_threshold=5000)
+    """
+    # Convert to numpy array
+    spectrum = np.array(spectrum)
+    
+    # Create x-axis values
+    if wavelengths is not None:
+        wavelengths = np.array(wavelengths)
+        if len(wavelengths) != len(spectrum):
+            raise ValueError(f"Wavelengths length ({len(wavelengths)}) must match spectrum length ({len(spectrum)})")
+        x_values = wavelengths
+    else:
+        x_values = np.arange(len(spectrum))
+        xlabel = 'Feature Index'
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot spectrum
+    ax.plot(x_values, spectrum, color=color, linewidth=linewidth, alpha=0.8)
+    
+    # Add labels and title
+    ax.set_xlabel(xlabel, fontsize=12)
+    ax.set_ylabel(ylabel, fontsize=12)
+    ax.set_title(title, fontsize=14, fontweight='bold')
+    
+    # Add grid
+    if grid:
+        ax.grid(True, alpha=0.3, linestyle='--')
+    
+    # Annotate peaks if requested
+    if annotate_peaks:
+        if peak_threshold is not None:
+            # Find peaks above threshold
+            peak_indices = np.where(spectrum > peak_threshold)[0]
+            # Further filter to local maxima
+            peak_mask = np.zeros(len(spectrum), dtype=bool)
+            for idx in peak_indices:
+                if idx > 0 and idx < len(spectrum) - 1:
+                    if spectrum[idx] > spectrum[idx-1] and spectrum[idx] > spectrum[idx+1]:
+                        peak_mask[idx] = True
+            peak_indices = np.where(peak_mask)[0]
+        else:
+            # Find top 5 peaks - simple approach without scipy
+            # Look for local maxima
+            peak_mask = np.zeros(len(spectrum), dtype=bool)
+            for idx in range(1, len(spectrum) - 1):
+                if spectrum[idx] > spectrum[idx-1] and spectrum[idx] > spectrum[idx+1]:
+                    peak_mask[idx] = True
+            peak_indices = np.where(peak_mask)[0]
+            
+            # If we found peaks, take top 5 by intensity
+            if len(peak_indices) > 5:
+                peak_intensities = spectrum[peak_indices]
+                top_peaks_indices = np.argsort(peak_intensities)[-5:]
+                peak_indices = peak_indices[top_peaks_indices]
+            elif len(peak_indices) == 0:
+                # Fallback: just take top 5 values
+                peak_indices = np.argsort(spectrum)[-5:]
+        
+        # Annotate each peak
+        for peak_idx in peak_indices:
+            peak_x = x_values[peak_idx]
+            peak_y = spectrum[peak_idx]
+            if wavelengths is not None:
+                label = f'{peak_x:.1f} nm'
+            else:
+                label = f'idx {peak_idx}'
+            ax.annotate(label, xy=(peak_x, peak_y), 
+                       xytext=(5, 5), textcoords='offset points',
+                       fontsize=9, color='red',
+                       bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7),
+                       arrowprops=dict(arrowstyle='->', color='red', lw=1))
+    
+    # Add statistics text box
+    stats_text = f'Mean: {np.mean(spectrum):.2f}\n'
+    stats_text += f'Max: {np.max(spectrum):.2f}\n'
+    stats_text += f'Min: {np.min(spectrum):.2f}\n'
+    stats_text += f'Std: {np.std(spectrum):.2f}'
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+           fontsize=10, verticalalignment='top',
+           bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    # Save if path provided
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+    
+    plt.show()
+    
+    return fig, ax
